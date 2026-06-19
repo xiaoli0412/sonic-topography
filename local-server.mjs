@@ -109,6 +109,22 @@ async function fetchNeteaseSearch(source, keywords, limit) {
   return { success: songs.length > 0, data: songs };
 }
 
+function normalizeNeteaseSong(song) {
+  const artistList = song.artists || song.ar || [];
+  const albumName = song.album?.name || song.al?.name || '';
+  return {
+    id: song.id,
+    name: song.name,
+    artist: artistList
+      .map((artist) => artist.name)
+      .filter(Boolean)
+      .join(' / '),
+    album: albumName,
+    duration: song.duration || song.dt || 0,
+    fee: song.fee,
+  };
+}
+
 async function fetchNeteaseUrl(source, id) {
   const suffix = source.url.params
     ? source.url.params(id)
@@ -156,12 +172,18 @@ async function trySources(requestFn, preferredSourceName = null) {
   throw new Error(`All Netease sources failed (${errors.join('; ')})`);
 }
 
-async function getNeteasePlayableUrl(id, { throwIfAllFail = false } = {}) {
+async function getNeteasePlayableUrl(
+  id,
+  { throwIfAllFail = false, preferredSourceName = null } = {}
+) {
   const cached = playableUrlCache.get(id);
   if (cached && cached.expiresAt > Date.now()) return cached.url;
 
   try {
-    const { data: playableUrl } = await trySources((source) => fetchNeteaseUrl(source, id));
+    const { data: playableUrl } = await trySources(
+      (source) => fetchNeteaseUrl(source, id),
+      preferredSourceName
+    );
     playableUrlCache.set(id, {
       url: playableUrl,
       expiresAt: Date.now() + playableUrlCacheTtl,
@@ -197,6 +219,79 @@ async function filterPlayableSongs(rawSongs, resultLimit) {
   }
 
   return playableSongs;
+}
+
+async function searchAllSources(keywords, limit, preferredSourceName = null) {
+  const enabled = NETEASE_SOURCES.filter((source) => source.enabled);
+
+  const settled = await Promise.allSettled(
+    enabled.map(async (source) => {
+      try {
+        const result = await fetchNeteaseSearch(source, keywords, limit);
+        if (!result.success || !result.data.length) return null;
+        return { sourceName: source.name, songs: result.data };
+      } catch (error) {
+        return null;
+      }
+    })
+  );
+
+  const successful = settled
+    .map((settledResult, index) =>
+      settledResult.status === 'fulfilled' && settledResult.value
+        ? { sourceName: enabled[index].name, songs: settledResult.value.songs }
+        : null
+    )
+    .filter(Boolean);
+
+  if (successful.length === 0) return null;
+
+  const preferredSource = NETEASE_SOURCES.find(
+    (source) => source.name === preferredSourceName && source.enabled
+  );
+
+  const songMap = new Map();
+  for (const { sourceName, songs } of successful) {
+    for (let position = 0; position < songs.length; position++) {
+      const normalized = normalizeNeteaseSong(songs[position]);
+      const existing = songMap.get(normalized.id);
+      if (!existing) {
+        songMap.set(normalized.id, {
+          ...normalized,
+          sources: [sourceName],
+          positions: { [sourceName]: position },
+        });
+      } else {
+        if (!existing.sources.includes(sourceName)) {
+          existing.sources.push(sourceName);
+        }
+        if (
+          existing.positions[sourceName] === undefined ||
+          position < existing.positions[sourceName]
+        ) {
+          existing.positions[sourceName] = position;
+        }
+      }
+    }
+  }
+
+  const merged = Array.from(songMap.values()).map((entry) => ({
+    ...entry,
+    bestPosition: Math.min(...Object.values(entry.positions)),
+    hasPreferred: preferredSource ? entry.sources.includes(preferredSourceName) : false,
+  }));
+
+  merged.sort((a, b) => {
+    if (a.hasPreferred && !b.hasPreferred) return -1;
+    if (!a.hasPreferred && b.hasPreferred) return 1;
+    if (b.sources.length !== a.sources.length) return b.sources.length - a.sources.length;
+    return a.bestPosition - b.bestPosition;
+  });
+
+  return {
+    songs: merged.map(({ positions, bestPosition, hasPreferred, ...song }) => song),
+    source: 'merged',
+  };
 }
 
 const app = express();
@@ -269,35 +364,30 @@ app.get('/api/netease/search', async (req, res) => {
     }
 
     const fetchLimit = Math.min(resultLimit * 3, 60);
+    const preferredSourceName =
+      preferredSource && preferredSource !== 'auto' ? preferredSource : null;
 
-    const normalizeSongs = (rawSongs) =>
-      rawSongs.map((song) => {
-        const artistList = song.artists || song.ar || [];
-        const albumName = song.album?.name || song.al?.name || '';
-        return {
-          id: song.id,
-          name: song.name,
-          artist: artistList
-            .map((artist) => artist.name)
-            .filter(Boolean)
-            .join(' / '),
-          album: albumName,
-          duration: song.duration || song.dt || 0,
-          fee: song.fee,
-        };
-      });
+    const result = await searchAllSources(keywords, fetchLimit, preferredSourceName);
 
-    const { source: usedSource, data: songs } = await trySources(async (source) => {
-      const result = await fetchNeteaseSearch(source, keywords, fetchLimit);
-      if (!result.success) return { success: false };
-      const rawSongs = normalizeSongs(result.data);
-      const playableSongs = await filterPlayableSongs(rawSongs, resultLimit);
-      return { success: playableSongs.length > 0, data: playableSongs };
-    }, preferredSource);
+    if (!result || result.songs.length === 0) {
+      res.status(502).json({ error: 'Netease search failed: all sources unavailable' });
+      return;
+    }
 
-    searchCache.set(cacheKey, { songs, source: usedSource, expiresAt: Date.now() + searchCacheTtl });
+    const playableSongs = await filterPlayableSongs(result.songs, resultLimit);
 
-    res.json({ songs, source: usedSource });
+    if (playableSongs.length === 0) {
+      res.status(502).json({ error: 'No playable songs found' });
+      return;
+    }
+
+    searchCache.set(cacheKey, {
+      songs: playableSongs,
+      source: 'merged',
+      expiresAt: Date.now() + searchCacheTtl,
+    });
+
+    res.json({ songs: playableSongs, source: 'merged' });
   } catch (error) {
     console.warn('Netease search failed:', error);
     res.status(502).json({ error: 'Netease search failed: all sources unavailable' });
@@ -334,7 +424,11 @@ app.get('/api/netease/url', async (req, res) => {
       return;
     }
 
-    const url = await getNeteasePlayableUrl(id, { throwIfAllFail: true });
+    const preferredSource = String(req.query.source || '').trim();
+    const url = await getNeteasePlayableUrl(id, {
+      throwIfAllFail: true,
+      preferredSourceName: preferredSource && preferredSource !== 'auto' ? preferredSource : null,
+    });
     res.json({ url });
   } catch (error) {
     console.warn('Netease url failed:', error);

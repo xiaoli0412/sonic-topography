@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { Play, Pause, Volume2, SkipForward, SkipBack, Palette, Plus, ListMusic, Shuffle, Repeat, Trash2 } from 'lucide-react';
+import { Play, Pause, Volume2, SkipForward, SkipBack, Palette, Plus, ListMusic, Shuffle, Repeat, Trash2, Radio } from 'lucide-react';
 import { engine } from '../../lib/AudioEngine';
 import { themes } from '../../lib/themes';
 import { LyricsDisplay } from './LyricsDisplay';
@@ -17,6 +17,7 @@ interface NeteaseSong {
   album: string;
   duration: number;
   fee: number;
+  sources?: string[];
 }
 
 interface NeteaseSource {
@@ -24,6 +25,14 @@ interface NeteaseSource {
   baseUrl: string;
   enabled: boolean;
   reachable: boolean;
+}
+
+interface ExternalMediaInfo {
+  title?: string;
+  artist?: string;
+  album?: string;
+  thumbnail?: string;
+  url?: string;
 }
 
 interface SavedPlaylist {
@@ -97,6 +106,11 @@ export function UI({ theme, onThemeChange }: UIProps) {
   const [playQueue, setPlayQueue] = useState<NeteaseSong[]>([]);
   const [currentSongId, setCurrentSongId] = useState<number | null>(null);
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
+  const [showExternalPanel, setShowExternalPanel] = useState(false);
+  const [externalListening, setExternalListening] = useState(false);
+  const [externalMediaInfo, setExternalMediaInfo] = useState<ExternalMediaInfo | null>(null);
+  const [externalUrl, setExternalUrl] = useState('');
+  const [externalStatus, setExternalStatus] = useState('');
   const hasLoadedPlaylistsRef = useRef(false);
 
   useEffect(() => {
@@ -139,22 +153,39 @@ export function UI({ theme, onThemeChange }: UIProps) {
   // Audio state poller
   useEffect(() => {
     const initEngine = async () => {
-       await engine.init(); 
+       await engine.init();
     };
     initEngine();
-    
+
     let animationFrameId: number;
+    let isVisible = document.visibilityState === 'visible';
+
+    const handleVisibility = () => {
+      isVisible = document.visibilityState === 'visible';
+      if (!isVisible && animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = 0;
+      } else if (isVisible && !animationFrameId) {
+        poll();
+      }
+    };
+
     const poll = () => {
       setIsPlaying(engine.isPlaying);
       setCurrentTime(engine.audioElement.currentTime);
       setDuration(engine.audioElement.duration || 0);
       setVolume(engine.audioElement.volume);
       setIsCapturing(engine.isCapturing);
-      animationFrameId = requestAnimationFrame(poll);
+      animationFrameId = isVisible ? requestAnimationFrame(poll) : 0;
     };
+
+    document.addEventListener('visibilitychange', handleVisibility);
     poll();
-    
-    return () => cancelAnimationFrame(animationFrameId);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+      cancelAnimationFrame(animationFrameId);
+    };
   }, []);
 
   // Tray Play/Pause IPC listener (Electron only)
@@ -167,6 +198,36 @@ export function UI({ theme, onThemeChange }: UIProps) {
     };
 
     window.electron.onTogglePlay(handleTogglePlay);
+  }, []);
+
+  // External media IPC listener (Electron only)
+  useEffect(() => {
+    if (!window.electron) return;
+
+    const unsubInfo = window.electron.onExternalMediaInfo((info) => {
+      setExternalMediaInfo(info);
+      if (info.title) {
+        setExternalStatus(`${info.artist || 'Unknown artist'} - ${info.title}`);
+      }
+    });
+
+    const unsubStatus = window.electron.onExternalMediaStatus((status) => {
+      if (status.status === 'stopped') {
+        setExternalMediaInfo(null);
+        setExternalStatus('');
+      } else if (status.status === 'stub') {
+        setExternalStatus('Native listener unavailable — manual URL fallback active');
+      } else if (status.isPlaying) {
+        setExternalStatus('External player is playing');
+      } else {
+        setExternalStatus('External player paused');
+      }
+    });
+
+    return () => {
+      unsubInfo();
+      unsubStatus();
+    };
   }, []);
 
   // Load available Netease sources when search panel opens
@@ -313,9 +374,17 @@ export function UI({ theme, onThemeChange }: UIProps) {
     setLyricsText('');
     setSearchStatus('Loading song...');
 
+    const chosenSource =
+      selectedSource !== 'auto'
+        ? selectedSource
+        : song.sources?.length
+        ? song.sources[0]
+        : '';
+    const sourceQuery = chosenSource ? `&source=${encodeURIComponent(chosenSource)}` : '';
+
     try {
       const [urlResponse, lyricResponse] = await Promise.all([
-        fetch(`/api/netease/url?id=${song.id}`),
+        fetch(`/api/netease/url?id=${song.id}${sourceQuery}`),
         fetch(`/api/netease/lyric?id=${song.id}`),
       ]);
 
@@ -331,7 +400,7 @@ export function UI({ theme, onThemeChange }: UIProps) {
       }
 
       engine.init();
-      engine.loadUrl(`/api/netease/audio?id=${song.id}`);
+      engine.loadUrl(`/api/netease/audio?id=${song.id}${sourceQuery}`);
       engine.play();
       setSearchStatus('');
       setShowSearchPanel(false);
@@ -339,6 +408,55 @@ export function UI({ theme, onThemeChange }: UIProps) {
       console.warn('Unable to load Netease song:', error);
       setSearchStatus('Load failed, skipping...');
       playFromQueue(1, song.id);
+    }
+  };
+
+  const handleExternalListeningChange = (enabled: boolean) => {
+    setExternalListening(enabled);
+    if (!window.electron) return;
+    if (enabled) {
+      window.electron.sendStartListeningExternalMedia();
+      setExternalStatus('Listening for external media...');
+    } else {
+      window.electron.sendStopListeningExternalMedia();
+      setExternalMediaInfo(null);
+      setExternalStatus('');
+    }
+  };
+
+  const handleLoadExternalUrl = () => {
+    const url = externalUrl.trim();
+    if (!url) return;
+
+    setTrackName('External Audio');
+    setLyricsText('');
+    engine.init();
+    engine.loadUrl(url);
+    engine.play();
+  };
+
+  const playExternalSong = async () => {
+    if (!externalMediaInfo?.title) return;
+
+    const keywords = externalMediaInfo.artist
+      ? `${externalMediaInfo.artist} ${externalMediaInfo.title}`
+      : externalMediaInfo.title;
+    setExternalStatus(`Searching Netease for "${keywords}"...`);
+
+    try {
+      const response = await fetch(`/api/netease/search?keywords=${encodeURIComponent(keywords)}`);
+      if (!response.ok) throw new Error('Search request failed');
+      const data = await response.json();
+      const songs = data.songs || [];
+      if (songs.length === 0) {
+        setExternalStatus('No playable songs found');
+        return;
+      }
+      await loadNeteaseSong(songs[0], songs);
+      setExternalStatus(`Playing: ${songs[0].artist ? `${songs[0].artist} - ` : ''}${songs[0].name}`);
+    } catch (error) {
+      console.warn('Unable to play external song from Netease:', error);
+      setExternalStatus('Netease search failed');
     }
   };
 
@@ -521,6 +639,9 @@ export function UI({ theme, onThemeChange }: UIProps) {
           <button onClick={() => setShowPlaylistPanel(true)} className="uppercase tracking-[0.2em] text-[10px] mb-12 opacity-40 hover:opacity-100 transition-opacity cursor-pointer flex items-center justify-center gap-2" style={{ writingMode: 'vertical-rl' }}>
             Playlist
           </button>
+          <button onClick={() => setShowExternalPanel(true)} className="uppercase tracking-[0.2em] text-[10px] mb-12 opacity-40 hover:opacity-100 transition-opacity cursor-pointer flex items-center justify-center gap-2" style={{ writingMode: 'vertical-rl' }}>
+            External
+          </button>
           
           <div className="mt-auto flex flex-col items-center gap-10">
             <button 
@@ -537,7 +658,7 @@ export function UI({ theme, onThemeChange }: UIProps) {
             >
               Upload
             </button>
-            <button 
+            <button
               onClick={() => {
                 if (engine.isCapturing) {
                   engine.stopCapture();
@@ -548,6 +669,7 @@ export function UI({ theme, onThemeChange }: UIProps) {
                   });
                 }
               }}
+              title="Capture system audio: choose the window or screen playing music"
               className={`uppercase tracking-[0.2em] text-[10px] transition-opacity cursor-pointer ${isCapturing ? 'opacity-100 text-[#ef4444]' : 'opacity-40 hover:opacity-100'}`}
               style={{ writingMode: 'vertical-rl' }}
             >
@@ -653,6 +775,18 @@ export function UI({ theme, onThemeChange }: UIProps) {
                   <Plus size={15} />
                 </span>
                 <div className="mt-1 text-[11px] text-white/45 truncate">{song.artist || 'Unknown artist'} · {song.album || 'Unknown album'}</div>
+                {song.sources && song.sources.length > 0 && (
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    {song.sources.map((source) => (
+                      <span
+                        key={source}
+                        className="inline-flex items-center px-1.5 py-0.5 rounded-sm border border-white/10 bg-white/5 text-[9px] uppercase tracking-wider text-white/40"
+                      >
+                        {source}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </button>
             ))}
           </div>
@@ -773,6 +907,104 @@ export function UI({ theme, onThemeChange }: UIProps) {
             )) : (
               <div className="px-5 py-8 text-[12px] text-white/40">No songs in this playlist yet</div>
             )}
+          </div>
+        </div>
+      )}
+
+      {showExternalPanel && (
+        <div className="absolute top-[40px] left-[100px] w-[360px] max-h-[70vh] z-[66] pointer-events-auto backdrop-blur-[20px] border border-white/10 rounded-sm overflow-hidden" style={{ background: 'rgba(5,10,15,0.9)' }}>
+          <div className="p-5 border-b border-white/10">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3 text-[12px] uppercase tracking-[0.2em] text-white/70">
+                <Radio size={15} />
+                External Audio
+              </div>
+              <button onClick={() => setShowExternalPanel(false)} className="text-[10px] uppercase tracking-[0.15em] text-white/40 hover:text-white">Close</button>
+            </div>
+
+            <label className="flex items-center gap-3 text-[11px] uppercase tracking-[0.15em] text-white/70 mb-4 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={externalListening}
+                onChange={(e) => handleExternalListeningChange(e.target.checked)}
+                className="w-4 h-4 rounded-sm border-white/20 bg-black/50"
+                style={{ accentColor: accentHex }}
+              />
+              Listen to external player
+            </label>
+
+            {externalListening && externalMediaInfo?.title && (
+              <div className="mb-4 p-3 border border-white/10 rounded-sm bg-white/5">
+                {externalMediaInfo.thumbnail && (
+                  <img
+                    src={externalMediaInfo.thumbnail}
+                    alt=""
+                    className="w-16 h-16 object-cover rounded-sm mb-2"
+                  />
+                )}
+                <div className="text-[13px] text-white truncate" title={externalMediaInfo.title}>{externalMediaInfo.title}</div>
+                <div className="mt-0.5 text-[11px] text-white/45 truncate">
+                  {externalMediaInfo.artist || 'Unknown artist'} · {externalMediaInfo.album || 'Unknown album'}
+                </div>
+                <button
+                  onClick={playExternalSong}
+                  className="mt-2 px-3 py-1.5 text-[10px] uppercase tracking-[0.15em] text-black rounded-sm"
+                  style={{ backgroundColor: accentHex }}
+                >
+                  Play on Netease
+                </button>
+              </div>
+            )}
+
+            {externalListening && !externalMediaInfo?.title && (
+              <div className="mb-4 text-[11px] text-white/45">{externalStatus || 'No external media detected'}</div>
+            )}
+
+            <div className="mb-4 p-3 border border-white/10 rounded-sm bg-white/5">
+              <div className="text-[11px] text-white/70 mb-2 leading-relaxed">
+                <strong className="text-white/90">System audio capture</strong><br />
+                Click Capture, then select the window or screen that is playing music (e.g. Kugou). The visualizer will react to that audio.
+              </div>
+              <button
+                onClick={() => {
+                  if (engine.isCapturing) {
+                    engine.stopCapture();
+                    setTrackName('No track selected');
+                  } else {
+                    engine.startCapture().then(() => {
+                      if (engine.isCapturing) setTrackName('System Audio Capture');
+                    });
+                  }
+                }}
+                className={`px-3 py-1.5 text-[10px] uppercase tracking-[0.15em] rounded-sm ${isCapturing ? 'text-white bg-[#ef4444]' : 'text-black'}`}
+                style={isCapturing ? {} : { backgroundColor: accentHex }}
+              >
+                {isCapturing ? 'Stop Capture' : 'Capture System Audio'}
+              </button>
+            </div>
+
+            <form
+              className="flex gap-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleLoadExternalUrl();
+              }}
+            >
+              <input
+                value={externalUrl}
+                onChange={(e) => setExternalUrl(e.target.value)}
+                placeholder="External audio URL"
+                className="min-w-0 flex-1 bg-white/5 border border-white/10 rounded-sm px-3 py-2 text-[12px] text-white outline-none focus:border-white/30"
+              />
+              <button
+                type="submit"
+                disabled={!externalUrl.trim()}
+                className="px-3 py-2 text-[10px] uppercase tracking-[0.15em] text-black rounded-sm disabled:opacity-50"
+                style={{ backgroundColor: accentHex }}
+              >
+                Load
+              </button>
+            </form>
           </div>
         </div>
       )}
@@ -1005,8 +1237,19 @@ function FreqTriggerPanel({ action, setAction, onClose, accentHex }: { action: '
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
+    let isVisible = document.visibilityState === 'visible';
+    const handleVisibility = () => {
+      isVisible = document.visibilityState === 'visible';
+      if (!isVisible && animationId) {
+        cancelAnimationFrame(animationId);
+        animationId = 0;
+      } else if (isVisible && !animationId) {
+        draw();
+      }
+    };
+
     const draw = () => {
-      animationId = requestAnimationFrame(draw);
+      animationId = isVisible ? requestAnimationFrame(draw) : 0;
       const width = canvas.width;
       const height = canvas.height;
       
@@ -1099,8 +1342,12 @@ function FreqTriggerPanel({ action, setAction, onClose, accentHex }: { action: '
           ctx.fill();
       }
     };
+    document.addEventListener('visibilitychange', handleVisibility);
     draw();
-    return () => cancelAnimationFrame(animationId);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+      cancelAnimationFrame(animationId);
+    };
   }, [accentHex, triggerPoint, mode]);
 
   const handlePointerDown = (e: React.PointerEvent) => {
@@ -1248,12 +1495,32 @@ function StatsPanel({ accentHex }: { accentHex: string }) {
 
   useEffect(() => {
     let animationFrameId: number;
+    let isVisible = document.visibilityState === 'visible';
+
+    const handleVisibility = () => {
+      isVisible = document.visibilityState === 'visible';
+      if (!isVisible && animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = 0;
+      } else if (isVisible && !animationFrameId) {
+        poll();
+      }
+    };
+
     const poll = () => {
       setData(engine.getAudioData());
-      animationFrameId = requestAnimationFrame(poll);
+      animationFrameId = isVisible && (engine.isPlaying || engine.isVisualReleasing())
+        ? requestAnimationFrame(poll)
+        : 0;
     };
+
+    document.addEventListener('visibilitychange', handleVisibility);
     poll();
-    return () => cancelAnimationFrame(animationFrameId);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+      cancelAnimationFrame(animationFrameId);
+    };
   }, []);
 
   return (

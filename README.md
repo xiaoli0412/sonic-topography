@@ -147,7 +147,25 @@ start-sonic-topography.bat
 
 网易云音乐搜索现在支持多音源自动兜底。音源在 `local-server.mjs` 文件顶部的 `NETEASE_SOURCES` 数组中配置，默认包含 `official`（music.163.com）以及几个公开镜像。如果某个源不可用，可将其 `enabled` 设为 `false` 临时禁用。
 
-搜索面板中可以选择 `Auto`（自动选择可用源）或指定某个源；搜索结果会显示 `via {source}`，表明当前使用的音源。
+搜索时会并发请求所有启用的音源，将结果合并、按歌曲 ID 去重后展示。每首结果会显示其可用的音源标签，最大化可搜索到的歌曲量。搜索面板中可以选择 `Auto`（自动选择可用源）或指定某个源；结果列表会显示 `via {source}`，表明当前播放使用的音源。
+
+## 外部音频与本地播放器联动
+
+Electron 桌面版支持外部音频输入，左侧栏提供两种方式：
+
+1. **系统音频捕获**：点击左侧 `Capture` 或 External Audio 面板中的 `Capture System Audio`，在弹出的选择框中选中正在播放音乐的窗口或整个屏幕（如酷狗、浏览器标签页），应用即可实时将该音频输入可视化引擎。捕获仅取音频，不传输视频画面。
+2. **手动输入音频 URL**：粘贴外部音频流地址（如 `.mp3`、`.m4a`、直播流等）后点击 Load，即可通过 `AudioEngine` 播放并驱动 3D 可视化。
+3. **SMTC 元数据监听（实验性）**：开启 External Audio 面板中的 `Listen to external player` 后，应用会尝试通过 Windows SMTC 获取系统正在播放的曲目标题、艺术家、封面等元数据。当前版本已预留 IPC 与 UI 结构，完整的系统级元数据监听需要安装 Node-RT 包并启用 `electron/main.js` 中的 SMTC 监听器。在网页版中仅支持手动输入 URL。
+
+## 性能与打包优化
+
+本项目针对渲染性能和 Electron 打包体积做了以下优化：
+
+- **音频分析缓存**：`AudioEngine` 对 `analyser.getByteFrequencyData` 的结果按帧缓存，避免同一动画帧内多次调用分析接口。
+- **渲染循环暂停**：Three.js 场景在音频暂停、页面隐藏且没有活跃视觉特效（波纹、流星、粒子）时跳过更新，显著降低 GPU/CPU 占用。
+- **Uniform 精简**：主题颜色仅在目标值变化时继续插值，浮点型 uniform 只在差值超过阈值时更新，波纹数组仅在新增波纹时重新赋值。
+- **减少运行时对象分配**：复用 `THREE.Vector2`、`THREE.Color` 等对象，避免每帧创建新的材质颜色。
+- **Electron 包瘦身**：`electron-builder.yml` 显式启用 `asar`，并排除源码、`dist` source map、开发脚本以及 `node_modules` 中的测试、文档、类型声明和 source map；同时移除了未使用的运行时依赖。
 
 ## 常用命令
 

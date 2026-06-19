@@ -124,32 +124,50 @@ export class AudioEngine {
     if (this.audioCtx?.state === 'suspended') {
       this.audioCtx.resume();
     }
-    
+
     this.pause(); // stop file playback if any
 
     try {
-      this.captureStream = await navigator.mediaDevices.getDisplayMedia({ 
-        audio: {
+      // Prefer audio-only capture; fallback to audio+video if unsupported.
+      let constraints: DisplayMediaStreamOptions;
+      try {
+        constraints = {
+          audio: {
             echoCancellation: false,
             noiseSuppression: false,
             autoGainControl: false,
-        }, 
-        video: true 
-      });
+          },
+          video: false as unknown as MediaTrackConstraints,
+        };
+        this.captureStream = await navigator.mediaDevices.getDisplayMedia(constraints);
+      } catch {
+        constraints = {
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+          },
+          video: true,
+        };
+        this.captureStream = await navigator.mediaDevices.getDisplayMedia(constraints);
+      }
       if (!this.audioCtx || !this.analyser) return;
 
       if (this.captureSource) {
         this.captureSource.disconnect();
       }
 
+      // Stop video tracks to save resources; keep audio tracks.
+      this.captureStream.getVideoTracks().forEach(track => track.stop());
+
       this.captureSource = this.audioCtx.createMediaStreamSource(this.captureStream);
       // Connect directly to analyser, NOT to destination (avoids feedback)
       this.captureSource.connect(this.analyser);
-      
+
       this.isCapturing = true;
       this.isPlaying = true;
 
-      this.captureStream.getVideoTracks()[0]?.addEventListener('ended', () => {
+      this.captureStream.getAudioTracks()[0]?.addEventListener('ended', () => {
          this.stopCapture();
       });
 
@@ -316,12 +334,35 @@ export class AudioEngine {
       }
   }
 
+  private lastAnalysisTime = 0;
+  private cachedAudioData: AudioData | null = null;
+
   public getRawFrequencyData(): Uint8Array {
+    // Ensure frequency data is current for this animation frame.
+    if (performance.now() - this.lastAnalysisTime >= 1.0) {
+      this.analyzeFrame();
+    }
     return this.dataArray;
   }
 
-
   public getAudioData(): AudioData {
+    if (!this.analyser) {
+      return { ...this.smoothedData };
+    }
+
+    const now = performance.now();
+    if (now - this.lastAnalysisTime < 1.0 && this.cachedAudioData) {
+      return { ...this.cachedAudioData };
+    }
+
+    return this.analyzeFrame();
+  }
+
+  public isVisualReleasing(): boolean {
+    return performance.now() < this.visualReleaseUntil;
+  }
+
+  private analyzeFrame(): AudioData {
     if (!this.analyser) {
       return { ...this.smoothedData };
     }
@@ -454,6 +495,9 @@ export class AudioEngine {
     this.smoothedData.smoothness += (smoothnessVal - this.smoothedData.smoothness) * dt;
     this.smoothedData.density += (density - this.smoothedData.density) * dt;
     this.smoothedData.spectralCentroid += (spectralCentroid - this.smoothedData.spectralCentroid) * dt;
+
+    this.lastAnalysisTime = performance.now();
+    this.cachedAudioData = this.smoothedData;
 
     return { ...this.smoothedData };
   }

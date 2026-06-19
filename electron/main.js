@@ -1,8 +1,11 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage } from 'electron';
+import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain } from 'electron';
 import { fork } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,6 +18,8 @@ let mainWindow;
 let serverProcess;
 let tray;
 let isQuitting = false;
+let isListeningExternalMedia = false;
+let smtcNativeModule = null;
 
 function loadAppIcon() {
   const iconName = process.platform === 'win32' ? 'icon.ico' : 'icon.png';
@@ -38,6 +43,59 @@ function loadAppIcon() {
   }
   return undefined;
 }
+
+function loadSmtcNativeModule() {
+  if (smtcNativeModule) return smtcNativeModule;
+  if (process.platform !== 'win32') return null;
+
+  try {
+    smtcNativeModule = require('@nodert-win10/windows.media.control');
+    console.log('[SMTC] Native control module loaded.');
+  } catch (error) {
+    console.log('[SMTC] Native control module unavailable:', error.message);
+    smtcNativeModule = null;
+  }
+
+  return smtcNativeModule;
+}
+
+function sendExternalMediaInfo(info) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('external-media-info', info);
+  }
+}
+
+function sendExternalMediaStatus(status) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('external-media-status', status);
+  }
+}
+
+function startExternalMediaListener() {
+  if (isListeningExternalMedia) return;
+  isListeningExternalMedia = true;
+
+  const smtc = loadSmtcNativeModule();
+  if (!smtc) {
+    console.log('[SMTC] Running in stub mode; manual URL fallback is available.');
+    sendExternalMediaStatus({ isPlaying: false, status: 'stub' });
+    return;
+  }
+
+  // Native SMTC integration placeholder. When a Node-RT compatible module is
+  // available, wire CurrentSessionChanged / MediaPropertiesChanged here and
+  // call sendExternalMediaInfo / sendExternalMediaStatus.
+  sendExternalMediaStatus({ isPlaying: false, status: 'active' });
+}
+
+function stopExternalMediaListener() {
+  if (!isListeningExternalMedia) return;
+  isListeningExternalMedia = false;
+  sendExternalMediaStatus({ isPlaying: false, status: 'stopped' });
+}
+
+ipcMain.on('start-listening-external-media', startExternalMediaListener);
+ipcMain.on('stop-listening-external-media', stopExternalMediaListener);
 
 function createWindow() {
   const icon = loadAppIcon();
