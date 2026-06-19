@@ -1,6 +1,9 @@
 node_modules/
 build/
 dist/
+dist-electron/
+dist-electron*/
+electron-dist/
 coverage/
 data/
 docs/
@@ -8,3 +11,4 @@ docs/
 *.log
 .env*
 !.env.example
+.trae/

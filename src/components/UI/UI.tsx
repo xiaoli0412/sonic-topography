@@ -19,6 +19,13 @@ interface NeteaseSong {
   fee: number;
 }
 
+interface NeteaseSource {
+  name: string;
+  baseUrl: string;
+  enabled: boolean;
+  reachable: boolean;
+}
+
 interface SavedPlaylist {
   id: string;
   name: string;
@@ -78,6 +85,9 @@ export function UI({ theme, onThemeChange }: UIProps) {
   const [searchResults, setSearchResults] = useState<NeteaseSong[]>([]);
   const [searchStatus, setSearchStatus] = useState('');
   const [isSearching, setIsSearching] = useState(false);
+  const [availableSources, setAvailableSources] = useState<NeteaseSource[]>([]);
+  const [selectedSource, setSelectedSource] = useState<string>('auto');
+  const [lastSearchSource, setLastSearchSource] = useState<string>('');
   const [showPlaylistPanel, setShowPlaylistPanel] = useState(false);
   const [playlists, setPlaylists] = useState<SavedPlaylist[]>(readSavedPlaylists);
   const [activePlaylistId, setActivePlaylistId] = useState('favorites');
@@ -146,6 +156,38 @@ export function UI({ theme, onThemeChange }: UIProps) {
     
     return () => cancelAnimationFrame(animationFrameId);
   }, []);
+
+  // Tray Play/Pause IPC listener (Electron only)
+  useEffect(() => {
+    if (!window.electron) return;
+
+    const handleTogglePlay = () => {
+      engine.init();
+      engine.togglePlay();
+    };
+
+    window.electron.onTogglePlay(handleTogglePlay);
+  }, []);
+
+  // Load available Netease sources when search panel opens
+  useEffect(() => {
+    if (!showSearchPanel) return;
+
+    const loadSources = async () => {
+      try {
+        const response = await fetch('/api/netease/sources');
+        if (!response.ok) throw new Error('Sources request failed');
+        const data = await response.json();
+        if (Array.isArray(data.sources)) {
+          setAvailableSources(data.sources.filter((source: NeteaseSource) => source.enabled));
+        }
+      } catch (error) {
+        console.warn('Unable to load Netease sources:', error);
+      }
+    };
+
+    loadSources();
+  }, [showSearchPanel]);
 
   const processFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -242,13 +284,19 @@ export function UI({ theme, onThemeChange }: UIProps) {
     setIsSearching(true);
     setSearchStatus('Searching...');
     setSearchResults([]);
+    setLastSearchSource('');
 
     try {
-      const response = await fetch(`/api/netease/search?keywords=${encodeURIComponent(keywords)}`);
+      let url = `/api/netease/search?keywords=${encodeURIComponent(keywords)}`;
+      if (selectedSource !== 'auto') {
+        url += `&source=${encodeURIComponent(selectedSource)}`;
+      }
+      const response = await fetch(url);
       if (!response.ok) throw new Error('Search request failed');
 
       const data = await response.json();
       setSearchResults(data.songs || []);
+      setLastSearchSource(data.source || '');
       setSearchStatus(data.songs?.length ? '' : 'No playable songs found');
     } catch (error) {
       console.warn('Netease search failed:', error);
@@ -522,7 +570,7 @@ export function UI({ theme, onThemeChange }: UIProps) {
         AJIN.
       </div>
 
-      {/* Player Panel */}
+      {/* Search Panel */}
       {showSearchPanel && (
         <div className="absolute top-[40px] left-[100px] w-[360px] max-h-[70vh] z-50 pointer-events-auto backdrop-blur-[20px] border border-white/10 rounded-sm overflow-hidden" style={{ background: 'rgba(5,10,15,0.88)' }}>
           <div className="p-5 border-b border-white/10">
@@ -552,6 +600,29 @@ export function UI({ theme, onThemeChange }: UIProps) {
                 Go
               </button>
             </form>
+            <div className="flex items-center justify-between mt-3">
+              <label className="flex items-center gap-2 text-[10px] uppercase tracking-[0.15em] text-white/45">
+                Source
+                <select
+                  value={selectedSource}
+                  onChange={(e) => setSelectedSource(e.target.value)}
+                  disabled={isSearching}
+                  className="bg-white/5 border border-white/10 rounded-sm px-2 py-1 text-[11px] text-white outline-none focus:border-white/30 disabled:opacity-50"
+                >
+                  <option value="auto">Auto</option>
+                  {availableSources.map((source) => (
+                    <option key={source.name} value={source.name}>
+                      {source.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {lastSearchSource && searchResults.length > 0 && (
+                <span className="text-[10px] text-white/35">
+                  via {lastSearchSource}
+                </span>
+              )}
+            </div>
             {searchStatus && <div className="mt-3 text-[11px] text-white/45">{searchStatus}</div>}
           </div>
           <div className="max-h-[48vh] overflow-y-auto">

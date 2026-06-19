@@ -1,0 +1,26 @@
+appId: com.example.sonic-topography
+productName: Sonic Topography
+publish: null
+directories:
+  output: dist-electron
+files:
+  - dist/**/*
+  - electron/**/*
+  - local-server.mjs
+  - data/**/*
+  - package.json
+  - "!**/*.map"
+  - "!dist/**/*.map"
+  - "!**/.DS_Store"
+  - "!**/Thumbs.db"
+win:
+  target:
+    - nsis
+    - portable
+  icon: electron/assets/icon.ico
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  installerIcon: electron/assets/icon.ico
+  uninstallerIcon: electron/assets/icon.ico
+  installerHeaderIcon: electron/assets/icon.ico

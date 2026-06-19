@@ -15,6 +15,64 @@ Sonic Topography 是一个本地音乐可视化程序，使用 React、Three.js�
 - 支持顺序播放和随机播放
 - Windows 一键启动脚本
 
+## Windows 桌面应用
+
+除了网页版，项目现在还包含基于 Electron 的 Windows 桌面应用。桌面版启动时会自动运行本地后端服务，无需手动打开浏览器，也能独立运行。
+
+### 开发运行
+
+```powershell
+npm run electron:dev
+```
+
+这会启动 Vite 开发服务器并打开 Electron 窗口（开发模式下会自动打开开发者工具）。
+
+### 构建生产版应用
+
+```powershell
+npm run build
+npm run electron:build
+```
+
+构建流程：
+
+1. `npm run build`：构建前端生产包（输出到 `dist/`）。
+2. `npm run electron:build`：使用 electron-builder 打包 Windows 安装程序和便携版。
+
+构建产物位于 `dist-electron/`：
+
+- 安装包：`dist-electron/Sonic Topography Setup 0.0.0.exe`
+- 便携版：`dist-electron/Sonic Topography 0.0.0.exe`
+- 解压后的程序：`dist-electron/win-unpacked/Sonic Topography.exe`
+
+### 系统托盘行为
+
+桌面应用运行后会在系统托盘显示图标：
+
+- 点击窗口的 **关闭按钮** 不会退出应用，而是最小化到系统托盘；
+- 右键托盘图标，选择 **Quit** 才会完全退出应用。
+
+### Windows 桌面应用一键启动
+
+为方便启动桌面版，可使用：
+
+```text
+start-windows-app.bat
+```
+
+该脚本会：
+
+1. 检查是否已安装 Node.js；
+2. 如果已打包的 `dist-electron/win-unpacked/Sonic Topography.exe` 存在，则直接运行它；
+3. 否则，如果 `node_modules/` 不存在，自动安装依赖；
+4. 否则运行 `npm run electron:dev`。
+
+原有的网页版脚本仍然可用：
+
+- `npm run dev`：启动 Vite 网页开发服务器
+- `npm run build`：构建前端生产包
+- `npm start`：启动本地生产服务器（网页模式）
+
 ## Windows 一键启动
 
 前提：电脑需要先安装 Node.js。
@@ -85,10 +143,20 @@ start-sonic-topography.bat
 - 歌单优先保存在本地文件 `data/playlists.json`。只要保留项目文件夹，重启应用后歌单还在；浏览器 `localStorage` 只作为兜底。
 - `start-sonic-topography.bat` 会在本地启动服务，默认地址是 `http://127.0.0.1:4173`。
 
+## 音源配置与切换
+
+网易云音乐搜索现在支持多音源自动兜底。音源在 `local-server.mjs` 文件顶部的 `NETEASE_SOURCES` 数组中配置，默认包含 `official`（music.163.com）以及几个公开镜像。如果某个源不可用，可将其 `enabled` 设为 `false` 临时禁用。
+
+搜索面板中可以选择 `Auto`（自动选择可用源）或指定某个源；搜索结果会显示 `via {source}`，表明当前使用的音源。
+
 ## 常用命令
 
 ```powershell
-npm run lint
-npm run build
-npm start
+npm run lint            # TypeScript 类型检查（tsc --noEmit）
+npm run dev             # 启动 Vite 网页开发服务器
+npm run build           # 构建前端生产包
+npm start               # 启动本地生产服务器（网页模式）
+npm run electron:dev    # 启动 Electron 桌面应用开发模式
+npm run electron:build  # 构建 Windows 桌面安装包和便携版
+npm run electron:pack   # 只打包解压版（不生成安装包）
 ```
