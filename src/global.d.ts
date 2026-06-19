@@ -23,6 +23,7 @@ declare global {
       onExternalMediaStatus: (callback: (status: ExternalMediaStatus) => void) => (() => void);
       sendStartListeningExternalMedia: () => void;
       sendStopListeningExternalMedia: () => void;
+      getSystemAudioSource: () => Promise<{ id: string; name: string } | null>;
     };
   }
 }

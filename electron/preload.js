@@ -16,4 +16,5 @@ contextBridge.exposeInMainWorld('electron', {
   },
   sendStartListeningExternalMedia: () => ipcRenderer.send('start-listening-external-media'),
   sendStopListeningExternalMedia: () => ipcRenderer.send('stop-listening-external-media'),
+  getSystemAudioSource: () => ipcRenderer.invoke('get-system-audio-source'),
 });

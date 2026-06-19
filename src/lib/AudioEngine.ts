@@ -119,6 +119,57 @@ export class AudioEngine {
     this.dataArray = new Uint8Array(this.analyser.frequencyBinCount);
   }
 
+  private async tryGetDesktopStream(): Promise<MediaStream | null> {
+    // Electron desktopCapturer lets us grab the screen source that carries the
+    // system audio mix. This works even when "Stereo Mix" is disabled.
+    if (typeof window === 'undefined' || !window.electron) return null;
+    try {
+      const source = await window.electron.getSystemAudioSource();
+      if (!source) return null;
+
+      const constraints: MediaStreamConstraints = {
+        audio: {
+          // @ts-ignore - Electron-specific desktop capture constraints
+          mandatory: {
+            chromeMediaSource: 'desktop',
+            chromeMediaSourceId: source.id,
+          },
+        } as MediaTrackConstraints,
+        video: false,
+      };
+
+      try {
+        return await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (audioOnlyErr) {
+        console.warn('[SystemAudio] Audio-only desktop capture failed, trying with video track:', audioOnlyErr);
+        // Some Windows audio drivers require a video track to pair with the desktop source.
+        return await navigator.mediaDevices.getUserMedia({
+          audio: {
+            // @ts-ignore
+            mandatory: {
+              chromeMediaSource: 'desktop',
+              chromeMediaSourceId: source.id,
+            },
+          } as MediaTrackConstraints,
+          video: {
+            // @ts-ignore
+            mandatory: {
+              chromeMediaSource: 'desktop',
+              chromeMediaSourceId: source.id,
+              minWidth: 1,
+              maxWidth: 1,
+              minHeight: 1,
+              maxHeight: 1,
+            },
+          },
+        });
+      }
+    } catch (e) {
+      console.warn('Desktop system audio capture failed:', e);
+    }
+    return null;
+  }
+
   private async tryGetLoopbackStream(): Promise<MediaStream | null> {
     // On Windows, "Stereo Mix" / "立体声混音" is a loopback input device that captures
     // everything playing through the default output. Try to use it automatically
@@ -155,10 +206,15 @@ export class AudioEngine {
     this.pause(); // stop file playback if any
 
     try {
-      // 1. Try to auto-capture system audio via a loopback input device (Stereo Mix).
-      this.captureStream = await this.tryGetLoopbackStream();
+      // 1. Use Electron desktopCapturer to grab the system audio mix automatically.
+      this.captureStream = await this.tryGetDesktopStream();
 
-      // 2. Fallback to desktop media picker if no loopback device is available.
+      // 2. Fallback to Stereo Mix / loopback input device.
+      if (!this.captureStream) {
+        this.captureStream = await this.tryGetLoopbackStream();
+      }
+
+      // 3. Last resort: ask the user via the desktop media picker.
       if (!this.captureStream) {
         try {
           this.captureStream = await navigator.mediaDevices.getDisplayMedia({

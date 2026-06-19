@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain } from 'electron';
+import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, desktopCapturer } from 'electron';
 import { fork } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -96,6 +96,30 @@ function stopExternalMediaListener() {
 
 ipcMain.on('start-listening-external-media', startExternalMediaListener);
 ipcMain.on('stop-listening-external-media', stopExternalMediaListener);
+
+ipcMain.handle('get-system-audio-source', async () => {
+  if (process.platform !== 'win32') return null;
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: 0, height: 0 },
+    });
+    // Prefer the primary/entire screen source; it carries the system audio mix.
+    const source =
+      sources.find((s) => /entire screen|screen \d+|全屏/i.test(s.name)) ||
+      sources.find((s) => s.id.startsWith('screen:')) ||
+      sources[0];
+    if (!source) {
+      console.warn('[desktopCapturer] No screen source found for system audio');
+      return null;
+    }
+    console.log('[desktopCapturer] System audio source:', source.id, source.name);
+    return { id: source.id, name: source.name };
+  } catch (error) {
+    console.warn('[desktopCapturer] Failed to get screen source:', error.message);
+    return null;
+  }
+});
 
 function createWindow() {
   const icon = loadAppIcon();

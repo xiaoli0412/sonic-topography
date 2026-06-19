@@ -669,7 +669,7 @@ export function UI({ theme, onThemeChange }: UIProps) {
                   });
                 }
               }}
-              title="Capture system audio: auto-uses Stereo Mix if available, otherwise choose window/screen"
+              title="Capture all Windows audio output (desktop audio capture); falls back to Stereo Mix or screen picker"
               className={`uppercase tracking-[0.2em] text-[10px] transition-opacity cursor-pointer ${isCapturing ? 'opacity-100 text-[#ef4444]' : 'opacity-40 hover:opacity-100'}`}
               style={{ writingMode: 'vertical-rl' }}
             >
@@ -963,7 +963,7 @@ export function UI({ theme, onThemeChange }: UIProps) {
             <div className="mb-4 p-3 border border-white/10 rounded-sm bg-white/5">
               <div className="text-[11px] text-white/70 mb-2 leading-relaxed">
                 <strong className="text-white/90">System audio capture</strong><br />
-                Click the button below. The app will first try to use your Windows "Stereo Mix" / 立体声混音 loopback device to capture all system audio automatically (including Kugou, browsers, etc.). If that device is disabled, it will fall back to a window/screen picker.
+                Click to capture everything playing through Windows — Kugou, system player, browser, etc. The app uses Electron's desktop audio capture first, then falls back to Stereo Mix / 立体声混音, then the screen picker.
               </div>
               <button
                 onClick={() => {
