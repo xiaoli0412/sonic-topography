@@ -1,17 +1,14 @@
 {
   "name": "react-example",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.2.0",
   "type": "module",
-  "main": "electron/main.js",
   "scripts": {
-    "dev": "vite --port=3000 --host=0.0.0.0",
+    "dev": "vite --port=1420 --host=0.0.0.0",
     "build": "vite build",
-    "start": "node local-server.mjs",
     "preview": "vite preview",
-    "electron:dev": "cross-env NODE_ENV=development electron .",
-    "electron:build": "npm run build && electron-builder",
-    "electron:pack": "npm run build && electron-builder --dir",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit"
   },
@@ -19,8 +16,8 @@
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.6.1",
     "@tailwindcss/vite": "^4.1.14",
+    "@tauri-apps/api": "^2.11.1",
     "@vitejs/plugin-react": "^5.0.4",
-    "express": "^4.21.2",
     "lucide-react": "^0.546.0",
     "music-metadata-browser": "^2.5.11",
     "react": "^19.0.1",
@@ -29,16 +26,12 @@
     "vite": "^6.2.3"
   },
   "devDependencies": {
-    "@types/express": "^4.17.21",
+    "@tauri-apps/cli": "2.11.3",
     "@types/node": "^22.14.0",
     "@types/three": "^0.184.1",
     "autoprefixer": "^10.4.21",
-    "cross-env": "^7.0.3",
-    "electron": "^35.0.0",
-    "electron-builder": "^26.0.0",
     "esbuild": "^0.25.0",
     "tailwindcss": "^4.1.14",
-    "tsx": "^4.21.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.3"
   }

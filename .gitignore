@@ -1,9 +1,6 @@
 node_modules/
 build/
 dist/
-dist-electron/
-dist-electron*/
-electron-dist/
 coverage/
 data/
 docs/
@@ -12,3 +9,8 @@ docs/
 .env*
 !.env.example
 .trae/
+
+# Rust / Tauri
+src-tauri/target/
+.cargo-ok
+*.rs.bk

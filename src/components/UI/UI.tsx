@@ -4,6 +4,14 @@ import { engine } from '../../lib/AudioEngine';
 import { themes } from '../../lib/themes';
 import { LyricsDisplay } from './LyricsDisplay';
 import { extractAudioMetadata, extractLyricsFromAudio } from '../../lib/metadata';
+import {
+  searchSongs,
+  getSongUrl,
+  getLyric,
+  loadPlaylists as loadTauriPlaylists,
+  savePlaylists as saveTauriPlaylists,
+} from '../../lib/tauri';
+import { Song as TauriSong, Playlist as TauriPlaylist } from '../../lib/tauri-types';
 
 interface UIProps {
   theme: string;
@@ -18,21 +26,6 @@ interface NeteaseSong {
   duration: number;
   fee: number;
   sources?: string[];
-}
-
-interface NeteaseSource {
-  name: string;
-  baseUrl: string;
-  enabled: boolean;
-  reachable: boolean;
-}
-
-interface ExternalMediaInfo {
-  title?: string;
-  artist?: string;
-  album?: string;
-  thumbnail?: string;
-  url?: string;
 }
 
 interface SavedPlaylist {
@@ -76,6 +69,47 @@ function hasSavedSongs(playlists: SavedPlaylist[]): boolean {
   return playlists.some((playlist) => playlist.songs.length > 0);
 }
 
+function toNeteaseSong(song: TauriSong): NeteaseSong {
+  return {
+    id: song.id,
+    name: song.name,
+    artist: song.artists,
+    album: song.album,
+    duration: song.duration,
+    fee: 0,
+    sources: song.sources,
+  };
+}
+
+function toTauriSong(song: NeteaseSong): TauriSong {
+  return {
+    id: song.id,
+    name: song.name,
+    artists: song.artist,
+    album: song.album,
+    duration: song.duration,
+    picUrl: null,
+    source: song.sources?.[0] || '',
+    sources: song.sources || [],
+  };
+}
+
+function toNeteasePlaylists(playlists: TauriPlaylist[]): SavedPlaylist[] {
+  return playlists.map((playlist) => ({
+    id: playlist.id,
+    name: playlist.name,
+    songs: playlist.songs.map(toNeteaseSong),
+  }));
+}
+
+function toTauriPlaylists(playlists: SavedPlaylist[]): TauriPlaylist[] {
+  return playlists.map((playlist) => ({
+    id: playlist.id,
+    name: playlist.name,
+    songs: playlist.songs.map(toTauriSong),
+  }));
+}
+
 export function UI({ theme, onThemeChange }: UIProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const demoAudioUrl = '/demo.mp3';
@@ -94,8 +128,6 @@ export function UI({ theme, onThemeChange }: UIProps) {
   const [searchResults, setSearchResults] = useState<NeteaseSong[]>([]);
   const [searchStatus, setSearchStatus] = useState('');
   const [isSearching, setIsSearching] = useState(false);
-  const [availableSources, setAvailableSources] = useState<NeteaseSource[]>([]);
-  const [selectedSource, setSelectedSource] = useState<string>('auto');
   const [lastSearchSource, setLastSearchSource] = useState<string>('');
   const [showPlaylistPanel, setShowPlaylistPanel] = useState(false);
   const [playlists, setPlaylists] = useState<SavedPlaylist[]>(readSavedPlaylists);
@@ -107,38 +139,26 @@ export function UI({ theme, onThemeChange }: UIProps) {
   const [currentSongId, setCurrentSongId] = useState<number | null>(null);
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const [showExternalPanel, setShowExternalPanel] = useState(false);
-  const [externalListening, setExternalListening] = useState(false);
-  const [externalMediaInfo, setExternalMediaInfo] = useState<ExternalMediaInfo | null>(null);
   const [externalUrl, setExternalUrl] = useState('');
-  const [externalStatus, setExternalStatus] = useState('');
   const hasLoadedPlaylistsRef = useRef(false);
 
   useEffect(() => {
     if (!hasLoadedPlaylistsRef.current) return;
     window.localStorage.setItem(PLAYLIST_STORAGE_KEY, JSON.stringify(playlists));
-    fetch('/api/playlists', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ playlists }),
-    }).catch((error) => {
-      console.warn('Unable to save playlists to local server:', error);
+    saveTauriPlaylists(toTauriPlaylists(playlists)).catch((error) => {
+      console.warn('Unable to save playlists via Tauri:', error);
     });
   }, [playlists]);
 
   useEffect(() => {
     const loadPlaylists = async () => {
       try {
-        const response = await fetch('/api/playlists');
-        if (!response.ok) throw new Error('Playlist request failed');
-        const data = await response.json();
-        if (Array.isArray(data.playlists) && data.playlists.length > 0) {
-          const serverPlaylists = data.playlists;
-          const browserPlaylists = readSavedPlaylists();
-          if (!hasSavedSongs(serverPlaylists) && hasSavedSongs(browserPlaylists)) {
-            setPlaylists(browserPlaylists);
-          } else {
-            setPlaylists(serverPlaylists);
-          }
+        const serverPlaylists = toNeteasePlaylists(await loadTauriPlaylists());
+        const browserPlaylists = readSavedPlaylists();
+        if (!hasSavedSongs(serverPlaylists) && hasSavedSongs(browserPlaylists)) {
+          setPlaylists(browserPlaylists);
+        } else {
+          setPlaylists(serverPlaylists);
         }
       } catch (error) {
         console.warn('Using browser playlist storage:', error);
@@ -187,68 +207,6 @@ export function UI({ theme, onThemeChange }: UIProps) {
       cancelAnimationFrame(animationFrameId);
     };
   }, []);
-
-  // Tray Play/Pause IPC listener (Electron only)
-  useEffect(() => {
-    if (!window.electron) return;
-
-    const handleTogglePlay = () => {
-      engine.init();
-      engine.togglePlay();
-    };
-
-    window.electron.onTogglePlay(handleTogglePlay);
-  }, []);
-
-  // External media IPC listener (Electron only)
-  useEffect(() => {
-    if (!window.electron) return;
-
-    const unsubInfo = window.electron.onExternalMediaInfo((info) => {
-      setExternalMediaInfo(info);
-      if (info.title) {
-        setExternalStatus(`${info.artist || 'Unknown artist'} - ${info.title}`);
-      }
-    });
-
-    const unsubStatus = window.electron.onExternalMediaStatus((status) => {
-      if (status.status === 'stopped') {
-        setExternalMediaInfo(null);
-        setExternalStatus('');
-      } else if (status.status === 'stub') {
-        setExternalStatus('Native listener unavailable — manual URL fallback active');
-      } else if (status.isPlaying) {
-        setExternalStatus('External player is playing');
-      } else {
-        setExternalStatus('External player paused');
-      }
-    });
-
-    return () => {
-      unsubInfo();
-      unsubStatus();
-    };
-  }, []);
-
-  // Load available Netease sources when search panel opens
-  useEffect(() => {
-    if (!showSearchPanel) return;
-
-    const loadSources = async () => {
-      try {
-        const response = await fetch('/api/netease/sources');
-        if (!response.ok) throw new Error('Sources request failed');
-        const data = await response.json();
-        if (Array.isArray(data.sources)) {
-          setAvailableSources(data.sources.filter((source: NeteaseSource) => source.enabled));
-        }
-      } catch (error) {
-        console.warn('Unable to load Netease sources:', error);
-      }
-    };
-
-    loadSources();
-  }, [showSearchPanel]);
 
   const processFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -348,17 +306,10 @@ export function UI({ theme, onThemeChange }: UIProps) {
     setLastSearchSource('');
 
     try {
-      let url = `/api/netease/search?keywords=${encodeURIComponent(keywords)}`;
-      if (selectedSource !== 'auto') {
-        url += `&source=${encodeURIComponent(selectedSource)}`;
-      }
-      const response = await fetch(url);
-      if (!response.ok) throw new Error('Search request failed');
-
-      const data = await response.json();
-      setSearchResults(data.songs || []);
+      const data = await searchSongs(keywords, 12);
+      setSearchResults(data.songs.map(toNeteaseSong));
       setLastSearchSource(data.source || '');
-      setSearchStatus(data.songs?.length ? '' : 'No playable songs found');
+      setSearchStatus(data.songs.length ? '' : 'No playable songs found');
     } catch (error) {
       console.warn('Netease search failed:', error);
       setSearchStatus('Search failed');
@@ -374,33 +325,25 @@ export function UI({ theme, onThemeChange }: UIProps) {
     setLyricsText('');
     setSearchStatus('Loading song...');
 
-    const chosenSource =
-      selectedSource !== 'auto'
-        ? selectedSource
-        : song.sources?.length
-        ? song.sources[0]
-        : '';
-    const sourceQuery = chosenSource ? `&source=${encodeURIComponent(chosenSource)}` : '';
+    const chosenSource = song.sources?.length ? song.sources[0] : '';
 
     try {
-      const [urlResponse, lyricResponse] = await Promise.all([
-        fetch(`/api/netease/url?id=${song.id}${sourceQuery}`),
-        fetch(`/api/netease/lyric?id=${song.id}`),
+      const [audioUrl, lyricData] = await Promise.all([
+        getSongUrl(song.id, chosenSource || undefined),
+        getLyric(song.id),
       ]);
 
-      const urlData = await urlResponse.json();
-      const lyricData = await lyricResponse.json();
       const lyric = lyricData.lyric || lyricData.translatedLyric || '';
       setLyricsText(lyric);
 
-      if (!urlData.url) {
+      if (!audioUrl) {
         setSearchStatus('Song unavailable, skipping...');
         playFromQueue(1, song.id);
         return;
       }
 
       engine.init();
-      engine.loadUrl(`/api/netease/audio?id=${song.id}${sourceQuery}`);
+      engine.loadUrl(audioUrl);
       engine.play();
       setSearchStatus('');
       setShowSearchPanel(false);
@@ -408,19 +351,6 @@ export function UI({ theme, onThemeChange }: UIProps) {
       console.warn('Unable to load Netease song:', error);
       setSearchStatus('Load failed, skipping...');
       playFromQueue(1, song.id);
-    }
-  };
-
-  const handleExternalListeningChange = (enabled: boolean) => {
-    setExternalListening(enabled);
-    if (!window.electron) return;
-    if (enabled) {
-      window.electron.sendStartListeningExternalMedia();
-      setExternalStatus('Listening for external media...');
-    } else {
-      window.electron.sendStopListeningExternalMedia();
-      setExternalMediaInfo(null);
-      setExternalStatus('');
     }
   };
 
@@ -433,31 +363,6 @@ export function UI({ theme, onThemeChange }: UIProps) {
     engine.init();
     engine.loadUrl(url);
     engine.play();
-  };
-
-  const playExternalSong = async () => {
-    if (!externalMediaInfo?.title) return;
-
-    const keywords = externalMediaInfo.artist
-      ? `${externalMediaInfo.artist} ${externalMediaInfo.title}`
-      : externalMediaInfo.title;
-    setExternalStatus(`Searching Netease for "${keywords}"...`);
-
-    try {
-      const response = await fetch(`/api/netease/search?keywords=${encodeURIComponent(keywords)}`);
-      if (!response.ok) throw new Error('Search request failed');
-      const data = await response.json();
-      const songs = data.songs || [];
-      if (songs.length === 0) {
-        setExternalStatus('No playable songs found');
-        return;
-      }
-      await loadNeteaseSong(songs[0], songs);
-      setExternalStatus(`Playing: ${songs[0].artist ? `${songs[0].artist} - ` : ''}${songs[0].name}`);
-    } catch (error) {
-      console.warn('Unable to play external song from Netease:', error);
-      setExternalStatus('Netease search failed');
-    }
   };
 
   const getCurrentQueue = () => playQueue.length > 0 ? playQueue : activePlaylist?.songs || [];
@@ -611,6 +516,7 @@ export function UI({ theme, onThemeChange }: UIProps) {
  
   const t = themes[theme] || themes['nocturnal'];
   const accentHex = `#${t.uRippleColor.getHexString()}`;
+  const isTauri = typeof window !== 'undefined' && !!(window.__TAURI_INTERNALS__ || window.__TAURI__);
 
   return (
     <div 
@@ -669,7 +575,7 @@ export function UI({ theme, onThemeChange }: UIProps) {
                   });
                 }
               }}
-              title="Capture all Windows audio output (desktop audio capture); falls back to Stereo Mix or screen picker"
+              title={isTauri ? "Capture all Windows audio output via Tauri (WASAPI loopback)" : "Capture all Windows audio output (desktop audio capture); falls back to Stereo Mix or screen picker"}
               className={`uppercase tracking-[0.2em] text-[10px] transition-opacity cursor-pointer ${isCapturing ? 'opacity-100 text-[#ef4444]' : 'opacity-40 hover:opacity-100'}`}
               style={{ writingMode: 'vertical-rl' }}
             >
@@ -722,29 +628,11 @@ export function UI({ theme, onThemeChange }: UIProps) {
                 Go
               </button>
             </form>
-            <div className="flex items-center justify-between mt-3">
-              <label className="flex items-center gap-2 text-[10px] uppercase tracking-[0.15em] text-white/45">
-                Source
-                <select
-                  value={selectedSource}
-                  onChange={(e) => setSelectedSource(e.target.value)}
-                  disabled={isSearching}
-                  className="bg-white/5 border border-white/10 rounded-sm px-2 py-1 text-[11px] text-white outline-none focus:border-white/30 disabled:opacity-50"
-                >
-                  <option value="auto">Auto</option>
-                  {availableSources.map((source) => (
-                    <option key={source.name} value={source.name}>
-                      {source.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {lastSearchSource && searchResults.length > 0 && (
-                <span className="text-[10px] text-white/35">
-                  via {lastSearchSource}
-                </span>
-              )}
-            </div>
+            {lastSearchSource && searchResults.length > 0 && (
+              <div className="mt-3 text-[10px] text-white/35">
+                via {lastSearchSource}
+              </div>
+            )}
             {searchStatus && <div className="mt-3 text-[11px] text-white/45">{searchStatus}</div>}
           </div>
           <div className="max-h-[48vh] overflow-y-auto">
@@ -922,48 +810,12 @@ export function UI({ theme, onThemeChange }: UIProps) {
               <button onClick={() => setShowExternalPanel(false)} className="text-[10px] uppercase tracking-[0.15em] text-white/40 hover:text-white">Close</button>
             </div>
 
-            <label className="flex items-center gap-3 text-[11px] uppercase tracking-[0.15em] text-white/70 mb-4 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={externalListening}
-                onChange={(e) => handleExternalListeningChange(e.target.checked)}
-                className="w-4 h-4 rounded-sm border-white/20 bg-black/50"
-                style={{ accentColor: accentHex }}
-              />
-              Listen to external player
-            </label>
-
-            {externalListening && externalMediaInfo?.title && (
-              <div className="mb-4 p-3 border border-white/10 rounded-sm bg-white/5">
-                {externalMediaInfo.thumbnail && (
-                  <img
-                    src={externalMediaInfo.thumbnail}
-                    alt=""
-                    className="w-16 h-16 object-cover rounded-sm mb-2"
-                  />
-                )}
-                <div className="text-[13px] text-white truncate" title={externalMediaInfo.title}>{externalMediaInfo.title}</div>
-                <div className="mt-0.5 text-[11px] text-white/45 truncate">
-                  {externalMediaInfo.artist || 'Unknown artist'} · {externalMediaInfo.album || 'Unknown album'}
-                </div>
-                <button
-                  onClick={playExternalSong}
-                  className="mt-2 px-3 py-1.5 text-[10px] uppercase tracking-[0.15em] text-black rounded-sm"
-                  style={{ backgroundColor: accentHex }}
-                >
-                  Play on Netease
-                </button>
-              </div>
-            )}
-
-            {externalListening && !externalMediaInfo?.title && (
-              <div className="mb-4 text-[11px] text-white/45">{externalStatus || 'No external media detected'}</div>
-            )}
-
             <div className="mb-4 p-3 border border-white/10 rounded-sm bg-white/5">
               <div className="text-[11px] text-white/70 mb-2 leading-relaxed">
                 <strong className="text-white/90">System audio capture</strong><br />
-                Click to capture everything playing through Windows — Kugou, system player, browser, etc. The app uses Electron's desktop audio capture first, then falls back to Stereo Mix / 立体声混音, then the screen picker.
+                {isTauri
+                  ? 'Click to capture everything playing through Windows — Kugou, system player, browser, etc. In Tauri the app uses a Rust WASAPI loopback capture exposed as a local HTTP stream.'
+                  : "Click to capture everything playing through Windows — Kugou, system player, browser, etc. The browser build falls back to Stereo Mix / 立体声混音 or the desktop media picker."}
               </div>
               <button
                 onClick={() => {
@@ -1056,7 +908,7 @@ export function UI({ theme, onThemeChange }: UIProps) {
             </button>
           </div>
           <div className="text-[12px] opacity-50 uppercase mb-6 tracking-wider">
-             {isCapturing ? 'System Audio Capture' : 'Local Audio'}
+             {isCapturing ? (isTauri ? 'System Audio Capture · Tauri' : 'System Audio Capture') : 'Local Audio'}
              <span className="ml-2 text-[#3b82f6] text-[10px]">&bull; {themes[theme]?.name}</span>
           </div>
 
