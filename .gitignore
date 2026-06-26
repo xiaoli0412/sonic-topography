@@ -15,3 +15,5 @@ sonic-topography-douyin-cover*.png
 *.exe~
 .env*
 !.env.example
+.trae/
+cmd/sonic-topography/dist/

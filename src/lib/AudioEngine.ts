@@ -147,24 +147,69 @@ export class AudioEngine {
     });
   }
 
+  private async tryGetLoopbackStream(): Promise<MediaStream | null> {
+    // On Windows, "Stereo Mix" / "立体声混音" is a loopback input device that captures
+    // everything playing through the default output. Try to use it automatically
+    // before falling back to the desktop media picker.
+    try {
+      await navigator.mediaDevices.getUserMedia({ audio: true });
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const loopback = devices.find(
+        d => d.kind === 'audioinput' &&
+          /(stereo mix|立体声混音|loopback|what u hear|wave out|主声音捕获)/i.test(d.label)
+      );
+      if (loopback && loopback.deviceId) {
+        return navigator.mediaDevices.getUserMedia({
+          audio: {
+            deviceId: { exact: loopback.deviceId },
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+          },
+        });
+      }
+    } catch (e) {
+      console.warn('Auto loopback capture failed:', e);
+    }
+    return null;
+  }
+
   public async startCapture() {
     await this.init();
     if (this.audioCtx?.state === 'suspended') {
       this.audioCtx.resume();
     }
-    
+
     this.pause(); // stop file playback if any
 
     try {
-      this.captureStream = await navigator.mediaDevices.getDisplayMedia({ 
-        audio: {
-            echoCancellation: false,
-            noiseSuppression: false,
-            autoGainControl: false,
-        }, 
-        video: true 
-      });
-      if (!this.audioCtx || !this.analyser) return;
+      // 1. Try to auto-capture system audio via a loopback input device (Stereo Mix).
+      this.captureStream = await this.tryGetLoopbackStream();
+
+      // 2. Fallback to desktop media picker if no loopback device is available.
+      if (!this.captureStream) {
+        try {
+          this.captureStream = await navigator.mediaDevices.getDisplayMedia({
+            audio: {
+              echoCancellation: false,
+              noiseSuppression: false,
+              autoGainControl: false,
+            },
+            video: false as unknown as MediaTrackConstraints,
+          });
+        } catch {
+          this.captureStream = await navigator.mediaDevices.getDisplayMedia({
+            audio: {
+              echoCancellation: false,
+              noiseSuppression: false,
+              autoGainControl: false,
+            },
+            video: true,
+          });
+        }
+      }
+
+      if (!this.audioCtx || !this.analyser || !this.captureStream) return;
 
       if (this.captureSource) {
         this.captureSource.disconnect();
@@ -173,7 +218,7 @@ export class AudioEngine {
       this.captureSource = this.audioCtx.createMediaStreamSource(this.captureStream);
       // Connect directly to analyser, NOT to destination (avoids feedback)
       this.captureSource.connect(this.analyser);
-      
+
       this.isCapturing = true;
       this.isPlaying = true;
 
