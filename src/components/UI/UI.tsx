@@ -575,7 +575,7 @@ export function UI({ theme, onThemeChange }: UIProps) {
                   });
                 }
               }}
-              title={isTauri ? "Capture all Windows audio output via Tauri (WASAPI loopback)" : "Capture all Windows audio output (desktop audio capture); falls back to Stereo Mix or screen picker"}
+              title={isTauri ? "Capture all Windows audio output via Tauri (WASAPI loopback PCM)" : "Capture all Windows audio output (desktop audio capture); falls back to Stereo Mix or screen picker"}
               className={`uppercase tracking-[0.2em] text-[10px] transition-opacity cursor-pointer ${isCapturing ? 'opacity-100 text-[#ef4444]' : 'opacity-40 hover:opacity-100'}`}
               style={{ writingMode: 'vertical-rl' }}
             >
@@ -814,7 +814,7 @@ export function UI({ theme, onThemeChange }: UIProps) {
               <div className="text-[11px] text-white/70 mb-2 leading-relaxed">
                 <strong className="text-white/90">System audio capture</strong><br />
                 {isTauri
-                  ? 'Click to capture everything playing through Windows — Kugou, system player, browser, etc. In Tauri the app uses a Rust WASAPI loopback capture exposed as a local HTTP stream.'
+                  ? 'Click to capture everything playing through Windows — Kugou, system player, browser, etc. In Tauri the app uses a Rust WASAPI loopback capture with direct PCM push to Web Audio.'
                   : "Click to capture everything playing through Windows — Kugou, system player, browser, etc. The browser build falls back to Stereo Mix / 立体声混音 or the desktop media picker."}
               </div>
               <button

@@ -1,4 +1,5 @@
 import { AudioData } from '../types';
+import { listen, Event, UnlistenFn } from '@tauri-apps/api/event';
 import {
   startSystemAudioCapture,
   stopSystemAudioCapture,
@@ -62,6 +63,12 @@ export class AudioEngine {
   private fadeNode: GainNode | null = null;
   private captureStream: MediaStream | null = null;
   private captureSource: MediaStreamAudioSourceNode | null = null;
+  private scriptProcessor: ScriptProcessorNode | null = null;
+  private tauriAudioListener: UnlistenFn | null = null;
+  private ringBuffer: Float32Array | null = null;
+  private ringWriteIndex: number = 0;
+  private ringReadIndex: number = 0;
+  private ringAvailable: number = 0;
   public audioElement: HTMLAudioElement;
 
   private dataArray: Uint8Array = new Uint8Array(0);
@@ -162,9 +169,10 @@ export class AudioEngine {
     }
 
     // In Tauri on Windows, ask the Rust side to capture the default render
-    // endpoint and expose it as a local HTTP WAV stream. The existing audio
-    // element is already wired to the analyser, so visualization continues
-    // to work with almost no frontend changes.
+    // endpoint via WASAPI loopback. Rust emits base64-encoded f32 PCM chunks
+    // on the `audio-capture-data` event; we decode them into a ring buffer and
+    // feed them to a ScriptProcessorNode so the existing analyser/destination
+    // chain keeps working without the unreliable HTTP audio element path.
     if (this.isTauri()) {
       try {
         if (this.pauseTimeout) {
@@ -175,10 +183,60 @@ export class AudioEngine {
         this.audioElement.pause();
         this.beginVisualRelease();
 
-        const { url } = await startSystemAudioCapture();
+        await this.init();
+        if (this.audioCtx?.state === 'suspended') {
+          await this.audioCtx.resume();
+        }
 
-        this.audioElement.src = url;
-        this.audioElement.load();
+        if (!this.scriptProcessor && this.audioCtx && this.fadeNode) {
+          this.scriptProcessor = this.audioCtx.createScriptProcessor(4096, 0, 2);
+          this.scriptProcessor.connect(this.fadeNode);
+
+          this.ringBuffer = new Float32Array(48000 * 2 * 2);
+          this.ringWriteIndex = 0;
+          this.ringReadIndex = 0;
+          this.ringAvailable = 0;
+
+          this.scriptProcessor.onaudioprocess = (e) => {
+            if (!this.ringBuffer) return;
+            const left = e.outputBuffer.getChannelData(0);
+            const right = e.outputBuffer.getChannelData(1);
+            for (let i = 0; i < left.length; i++) {
+              if (this.ringAvailable >= 2) {
+                left[i] = this.ringBuffer[this.ringReadIndex];
+                this.ringReadIndex = (this.ringReadIndex + 1) % this.ringBuffer.length;
+                this.ringAvailable--;
+
+                right[i] = this.ringBuffer[this.ringReadIndex];
+                this.ringReadIndex = (this.ringReadIndex + 1) % this.ringBuffer.length;
+                this.ringAvailable--;
+              } else {
+                left[i] = 0;
+                right[i] = 0;
+              }
+            }
+          };
+        }
+
+        if (!this.tauriAudioListener) {
+          this.tauriAudioListener = await listen<string>('audio-capture-data', (event: Event<string>) => {
+            if (!this.ringBuffer) return;
+            const binary = atob(event.payload);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+              bytes[i] = binary.charCodeAt(i);
+            }
+            const samples = new Float32Array(bytes.buffer);
+
+            for (let i = 0; i < samples.length; i++) {
+              if (this.ringAvailable < this.ringBuffer.length) {
+                this.ringBuffer[this.ringWriteIndex] = samples[i];
+                this.ringWriteIndex = (this.ringWriteIndex + 1) % this.ringBuffer.length;
+                this.ringAvailable++;
+              }
+            }
+          });
+        }
 
         if (this.fadeNode && this.audioCtx) {
           this.fadeNode.gain.cancelScheduledValues(this.audioCtx.currentTime);
@@ -189,15 +247,10 @@ export class AudioEngine {
           );
         }
 
-        await this.audioElement.play();
+        await startSystemAudioCapture();
 
         this.isCapturing = true;
         this.isPlaying = true;
-
-        this.audioElement.addEventListener('ended', () => {
-          this.isCapturing = false;
-          this.isPlaying = false;
-        });
       } catch (e) {
         console.warn('Tauri system audio capture failed:', e);
         this.isCapturing = false;
@@ -268,7 +321,19 @@ export class AudioEngine {
       stopSystemAudioCapture().catch((e) => {
         console.warn('Failed to stop Tauri system audio capture:', e);
       });
-      this.audioElement.pause();
+      if (this.scriptProcessor) {
+        this.scriptProcessor.disconnect();
+        this.scriptProcessor.onaudioprocess = null;
+        this.scriptProcessor = null;
+      }
+      if (this.tauriAudioListener) {
+        this.tauriAudioListener();
+        this.tauriAudioListener = null;
+      }
+      this.ringBuffer = null;
+      this.ringWriteIndex = 0;
+      this.ringReadIndex = 0;
+      this.ringAvailable = 0;
     }
     if (this.captureStream) {
       this.captureStream.getTracks().forEach(track => track.stop());

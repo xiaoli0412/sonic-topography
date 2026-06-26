@@ -41,10 +41,6 @@ export interface Playlist {
   songs: Song[];
 }
 
-export interface SystemAudioCaptureResponse {
-  url: string;
-}
-
 // ---------------------------------------------------------------------------
 // Command argument types
 // ---------------------------------------------------------------------------
@@ -100,6 +96,6 @@ export interface CommandReturnMap {
   [COMMANDS.getLyric]: LyricResponse;
   [COMMANDS.loadPlaylists]: Playlist[];
   [COMMANDS.savePlaylists]: Playlist[];
-  [COMMANDS.startSystemAudioCapture]: SystemAudioCaptureResponse;
+  [COMMANDS.startSystemAudioCapture]: void;
   [COMMANDS.stopSystemAudioCapture]: void;
 }

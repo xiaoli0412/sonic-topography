@@ -3060,6 +3060,7 @@ dependencies = [
 name = "sonic-topography"
 version = "0.2.0"
 dependencies = [
+ "base64 0.22.1",
  "once_cell",
  "reqwest 0.12.28",
  "serde",

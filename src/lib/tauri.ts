@@ -4,7 +4,6 @@ import {
   SearchResponse,
   LyricResponse,
   Playlist,
-  SystemAudioCaptureResponse,
 } from './tauri-types';
 
 export async function searchSongs(
@@ -35,8 +34,8 @@ export async function savePlaylists(playlists: Playlist[]): Promise<Playlist[]> 
   return invoke<Playlist[]>(COMMANDS.savePlaylists, { playlists });
 }
 
-export async function startSystemAudioCapture(): Promise<SystemAudioCaptureResponse> {
-  return invoke<SystemAudioCaptureResponse>(COMMANDS.startSystemAudioCapture);
+export async function startSystemAudioCapture(): Promise<void> {
+  return invoke<void>(COMMANDS.startSystemAudioCapture);
 }
 
 export async function stopSystemAudioCapture(): Promise<void> {

@@ -790,9 +790,8 @@ async fn save_playlists(
 // -----------------------------------------------------------------------------
 
 #[tauri::command]
-async fn start_system_audio_capture() -> Result<serde_json::Value, String> {
-    let url = audio_capture::start()?;
-    Ok(serde_json::json!({ "url": url }))
+async fn start_system_audio_capture(app_handle: tauri::AppHandle) -> Result<(), String> {
+    audio_capture::start(app_handle)
 }
 
 #[tauri::command]
